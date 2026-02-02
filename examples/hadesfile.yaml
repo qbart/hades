@@ -1,0 +1,55 @@
+jobs:
+  hello:
+    actions:
+      - run: echo "Hello from Hades"
+      - run: whoami
+
+  deploy:
+    env:
+      VERSION:
+      BINARY:
+        default: app
+    artifacts:
+      binary:
+        path: ./build/app
+    actions:
+      - copy:
+          src: files/config.conf
+          dst: /etc/app/config.conf
+      - template:
+          src: templates/service.conf.tmpl
+          dst: /etc/systemd/system/app.service
+      - mkdir:
+          path: /opt/app
+          mode: 0755
+      - copy:
+          artifact: binary
+          dst: /opt/app/app
+      - run: systemctl daemon-reload
+      - run: systemctl restart app
+
+plans:
+  test:
+    steps:
+      - name: greet
+        job: hello
+        targets:
+          - test-servers
+
+  full-deploy:
+    steps:
+      - name: canary
+        job: deploy
+        targets:
+          - app-servers
+        limit: 1
+        env:
+          VERSION: ${VERSION}
+
+      - name: promote
+        job: deploy
+        targets:
+          - app-servers
+        parallelism: "40%"
+        env:
+          VERSION: ${VERSION}

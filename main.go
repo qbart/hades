@@ -1,4 +1,4 @@
-package mainkk
+package main
 
 import (
 	"os"

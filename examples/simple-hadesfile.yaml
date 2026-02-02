@@ -1,0 +1,34 @@
+jobs:
+  setup:
+    actions:
+      - run: echo "Setting up..."
+      - run: mkdir -p /tmp/hades-test
+      - run: echo "Setup complete"
+
+  status:
+    actions:
+      - run: hostname
+      - run: uptime
+      - run: df -h
+
+plans:
+  check:
+    steps:
+      - name: check-status
+        job: status
+        targets:
+          - test-servers
+
+  deploy-canary:
+    steps:
+      - name: canary
+        job: status
+        targets:
+          - app-servers
+        limit: 1
+
+      - name: full-rollout
+        job: status
+        targets:
+          - app-servers
+        parallelism: "2"

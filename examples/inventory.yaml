@@ -1,0 +1,35 @@
+hosts:
+  - name: test-1
+    addr: 192.168.1.10
+    user: deploy
+    key: /home/user/.ssh/id_rsa
+
+  - name: test-2
+    addr: 192.168.1.11
+    user: deploy
+    key: /home/user/.ssh/id_rsa
+
+  - name: app-1
+    addr: 192.168.1.20
+    user: deploy
+    key: /home/user/.ssh/id_rsa
+
+  - name: app-2
+    addr: 192.168.1.21
+    user: deploy
+    key: /home/user/.ssh/id_rsa
+
+  - name: app-3
+    addr: 192.168.1.22
+    user: deploy
+    key: /home/user/.ssh/id_rsa
+
+targets:
+  test-servers:
+    - test-1
+    - test-2
+
+  app-servers:
+    - app-1
+    - app-2
+    - app-3
