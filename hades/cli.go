@@ -32,6 +32,7 @@ func (h *Hades) Run() {
 		Use:   "hades",
 		Short: "Hades - Change execution tool for servers",
 		Long:  "Hades gives provisioned machines a soul through explicit, predictable change execution.",
+		Version: "1.0.0",
 	}
 
 	runCmd := h.buildRunCommand()

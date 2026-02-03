@@ -17,6 +17,7 @@ import (
 	"github.com/SoftKiwiGames/hades/hades/schema"
 	"github.com/SoftKiwiGames/hades/hades/ssh"
 	"github.com/SoftKiwiGames/hades/hades/types"
+	"github.com/SoftKiwiGames/hades/hades/ui"
 )
 
 type Executor interface {
@@ -38,6 +39,7 @@ type executor struct {
 	sshClient ssh.Client
 	stdout    io.Writer
 	stderr    io.Writer
+	ui        *ui.Output
 }
 
 func New(sshClient ssh.Client, stdout, stderr io.Writer) Executor {
@@ -45,6 +47,7 @@ func New(sshClient ssh.Client, stdout, stderr io.Writer) Executor {
 		sshClient: sshClient,
 		stdout:    stdout,
 		stderr:    stderr,
+		ui:        ui.NewOutput(stdout, stderr),
 	}
 }
 
@@ -65,13 +68,15 @@ func (e *executor) ExecutePlan(ctx context.Context, file *schema.File, plan *sch
 		return result, result.Error
 	}
 
-	fmt.Fprintf(e.stdout, "Starting plan: %s\n", planName)
-	fmt.Fprintf(e.stdout, "Run ID: %s\n\n", result.RunID)
+	// Generate unique run ID
+	result.RunID = "hades-" + time.Now().Format("20060102-150405")
+
+	e.ui.PlanStarted(planName, result.RunID)
 
 	// Execute each step sequentially
 	for i, step := range plan.Steps {
-		fmt.Fprintf(e.stdout, "Step %d/%d: %s\n", i+1, len(plan.Steps), step.Name)
-		fmt.Fprintf(e.stdout, "  Job: %s\n", step.Job)
+		e.ui.StepProgress(i+1, len(plan.Steps), step.Name)
+		e.ui.Info("  Job: %s", step.Job)
 
 		// Resolve hosts from targets
 		var hosts []ssh.Host
@@ -165,8 +170,7 @@ func (e *executor) ExecutePlan(ctx context.Context, file *schema.File, plan *sch
 	}
 
 	result.EndTime = time.Now()
-	fmt.Fprintf(e.stdout, "✓ Plan completed successfully\n")
-	fmt.Fprintf(e.stdout, "Duration: %s\n", result.EndTime.Sub(result.StartTime))
+	e.ui.PlanCompleted(result.EndTime.Sub(result.StartTime))
 
 	return result, nil
 }
@@ -300,8 +304,7 @@ func (e *executor) DryRun(ctx context.Context, file *schema.File, plan *schema.P
 		return fmt.Errorf("failed to initialize registries: %w", err)
 	}
 
-	fmt.Fprintf(e.stdout, "Dry-run: %s\n", planName)
-	fmt.Fprintf(e.stdout, "This will execute the following:\n\n")
+	e.ui.DryRunHeader(planName)
 
 	// Iterate steps
 	for i, step := range plan.Steps {
