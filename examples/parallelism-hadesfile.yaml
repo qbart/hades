@@ -1,0 +1,104 @@
+jobs:
+  health-check:
+    actions:
+      - run: echo "Checking health..."
+      - run: hostname
+      - run: uptime
+
+  deploy:
+    actions:
+      - run: echo "Starting deployment..."
+      - mkdir:
+          path: /opt/app
+          mode: 0755
+      - run: echo "Deployment complete"
+
+plans:
+  # Serial execution (one host at a time)
+  serial-deploy:
+    steps:
+      - name: deploy-serial
+        job: deploy
+        targets:
+          - app-servers
+        parallelism: "1"
+
+  # Fixed parallelism (2 hosts at a time)
+  parallel-deploy:
+    steps:
+      - name: deploy-parallel
+        job: deploy
+        targets:
+          - app-servers
+        parallelism: "2"
+
+  # Percentage-based parallelism (40% of hosts)
+  percentage-deploy:
+    steps:
+      - name: deploy-percentage
+        job: deploy
+        targets:
+          - app-servers
+        parallelism: "40%"
+
+  # All hosts in parallel (no limit)
+  all-parallel:
+    steps:
+      - name: deploy-all
+        job: deploy
+        targets:
+          - app-servers
+
+  # Canary with limit, then full rollout
+  canary-rollout:
+    steps:
+      - name: canary
+        job: health-check
+        targets:
+          - app-servers
+        limit: 1
+
+      - name: rollout-phase-1
+        job: deploy
+        targets:
+          - app-servers
+        parallelism: "2"
+
+      - name: rollout-phase-2
+        job: health-check
+        targets:
+          - app-servers
+
+  # Complex multi-stage rollout
+  staged-rollout:
+    steps:
+      - name: canary-single-host
+        job: deploy
+        targets:
+          - app-servers
+        limit: 1
+        parallelism: "1"
+
+      - name: small-batch
+        job: deploy
+        targets:
+          - app-servers
+        limit: 2
+        parallelism: "2"
+
+      - name: verify
+        job: health-check
+        targets:
+          - app-servers
+        limit: 2
+
+      - name: full-rollout
+        job: deploy
+        targets:
+          - app-servers
+        parallelism: "50%"
+
+      - name: final-check
+        job: health-check
+        targets:
+          - app-servers

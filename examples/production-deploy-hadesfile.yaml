@@ -1,0 +1,181 @@
+registries:
+  prod:
+    type: filesystem
+    path: /var/hades/registry
+
+jobs:
+  health-check:
+    actions:
+      - run: curl -sf http://localhost:8080/health || exit 1
+      - run: systemctl is-active myapp
+
+  pre-deploy:
+    actions:
+      - run: systemctl stop myapp || true
+      - mkdir:
+          path: /opt/myapp/releases/${VERSION}
+          mode: 0755
+
+  deploy:
+    env:
+      VERSION:
+    actions:
+      - pull:
+          registry: prod
+          name: myapp
+          tag: ${VERSION}
+          to: /opt/myapp/releases/${VERSION}/app
+      - run: chmod +x /opt/myapp/releases/${VERSION}/app
+      - run: ln -sf /opt/myapp/releases/${VERSION} /opt/myapp/current
+      - run: systemctl start myapp
+      - run: sleep 5  # Wait for startup
+
+  post-deploy-verify:
+    actions:
+      - run: curl -sf http://localhost:8080/health
+      - run: curl -sf http://localhost:8080/version | grep ${VERSION}
+
+  rollback:
+    actions:
+      - run: systemctl stop myapp
+      - run: ln -sf /opt/myapp/releases/previous /opt/myapp/current
+      - run: systemctl start myapp
+
+  confirm:
+    actions:
+      - wait:
+          message: "Canary successful. Proceed with full rollout?"
+          timeout: "10m"
+
+plans:
+  # Safe production deployment with progressive rollout
+  production-deploy:
+    steps:
+      # Stage 1: Single canary host
+      - name: canary-deploy
+        job: deploy
+        targets: [production-servers]
+        limit: 1
+        parallelism: "1"
+        env:
+          VERSION: ${VERSION}
+
+      # Stage 2: Verify canary
+      - name: canary-verify
+        job: health-check
+        targets: [production-servers]
+        limit: 1
+
+      - name: canary-deep-check
+        job: post-deploy-verify
+        targets: [production-servers]
+        limit: 1
+
+      # Stage 3: Manual approval gate
+      - name: approval-gate
+        job: confirm
+        targets: [production-servers]
+        limit: 1
+
+      # Stage 4: Small batch (10% of fleet)
+      - name: small-batch
+        job: deploy
+        targets: [production-servers]
+        parallelism: "10%"
+        env:
+          VERSION: ${VERSION}
+
+      - name: verify-small-batch
+        job: health-check
+        targets: [production-servers]
+        parallelism: "10%"
+
+      # Stage 5: Medium batch (25% of fleet)
+      - name: medium-batch
+        job: deploy
+        targets: [production-servers]
+        parallelism: "25%"
+        env:
+          VERSION: ${VERSION}
+
+      - name: verify-medium-batch
+        job: health-check
+        targets: [production-servers]
+        parallelism: "25%"
+
+      # Stage 6: Full rollout (50% of remaining)
+      - name: full-rollout
+        job: deploy
+        targets: [production-servers]
+        parallelism: "50%"
+        env:
+          VERSION: ${VERSION}
+
+      # Stage 7: Final verification
+      - name: final-verification
+        job: health-check
+        targets: [production-servers]
+
+  # Fast staging deployment (higher risk tolerance)
+  staging-deploy:
+    steps:
+      - name: deploy-all
+        job: deploy
+        targets: [staging-servers]
+        parallelism: "5"
+        env:
+          VERSION: ${VERSION}
+
+      - name: verify-all
+        job: health-check
+        targets: [staging-servers]
+
+  # Emergency rollback (serial for safety)
+  emergency-rollback:
+    steps:
+      - name: stop-rollout
+        job: rollback
+        targets: [production-servers]
+        parallelism: "1"
+
+      - name: verify-rollback
+        job: health-check
+        targets: [production-servers]
+        parallelism: "1"
+
+  # Development: Deploy everything at once
+  dev-deploy:
+    steps:
+      - name: deploy
+        job: deploy
+        targets: [dev-servers]
+        # No parallelism = all hosts at once
+        env:
+          VERSION: ${VERSION}
+
+  # Blue-Green deployment pattern
+  blue-green-deploy:
+    steps:
+      # Deploy to inactive (green) pool
+      - name: deploy-green
+        job: deploy
+        targets: [green-pool]
+        parallelism: "5"
+        env:
+          VERSION: ${VERSION}
+
+      - name: verify-green
+        job: health-check
+        targets: [green-pool]
+
+      # Switch traffic (hypothetical load balancer job)
+      - name: switch-to-green
+        job: confirm
+        targets: [green-pool]
+        limit: 1
+
+      # Drain blue pool
+      - name: drain-blue
+        job: pre-deploy
+        targets: [blue-pool]
+        parallelism: "1"

@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/SoftKiwiGames/hades/hades/actions"
 	"github.com/SoftKiwiGames/hades/hades/artifacts"
 	"github.com/SoftKiwiGames/hades/hades/inventory"
 	"github.com/SoftKiwiGames/hades/hades/registry"
+	"github.com/SoftKiwiGames/hades/hades/rollout"
 	"github.com/SoftKiwiGames/hades/hades/schema"
 	"github.com/SoftKiwiGames/hades/hades/ssh"
 	"github.com/SoftKiwiGames/hades/hades/types"
@@ -117,20 +119,42 @@ func (e *executor) ExecutePlan(ctx context.Context, file *schema.File, plan *sch
 			return result, result.Error
 		}
 
-		// Execute job on each host (no parallelism yet - Phase 5)
-		for _, host := range hosts {
-			fmt.Fprintf(e.stdout, "[%s] Executing job %s\n", host.Name, step.Job)
+		// Parse rollout strategy
+		strategy, err := rollout.ParseStrategy(step.Parallelism, len(hosts))
+		if err != nil {
+			result.Failed = true
+			result.FailedStep = step.Name
+			result.Error = fmt.Errorf("invalid parallelism: %w", err)
+			return result, result.Error
+		}
+		strategy.Limit = step.Limit
 
-			if err := e.executeJob(ctx, job, planName, step.Targets[0], host, mergedEnv, artifactMgr, registryMgr); err != nil {
+		// Create batches based on strategy
+		batches := strategy.CreateBatches(hosts)
+		fmt.Fprintf(e.stdout, "  Batches: %d (parallelism: %s)\n", len(batches), step.Parallelism)
+		if step.Limit > 0 {
+			fmt.Fprintf(e.stdout, "  Limited to: %d hosts\n", step.Limit)
+		}
+		fmt.Fprintf(e.stdout, "\n")
+
+		// Execute batches sequentially, hosts within batch in parallel
+		for batchIdx, batch := range batches {
+			if len(batches) > 1 {
+				fmt.Fprintf(e.stdout, "Batch %d/%d (%d hosts)\n", batchIdx+1, len(batches), len(batch))
+			}
+
+			// Execute batch in parallel
+			if err := e.executeBatch(ctx, job, planName, step.Targets[0], batch, mergedEnv, artifactMgr, registryMgr); err != nil {
 				result.Failed = true
 				result.FailedStep = step.Name
-				result.FailedHost = host.Name
-				result.Error = fmt.Errorf("job failed on host %s: %w", host.Name, err)
+				result.Error = err
 				result.EndTime = time.Now()
 				return result, result.Error
 			}
 
-			fmt.Fprintf(e.stdout, "[%s] ✓ Job completed\n\n", host.Name)
+			if len(batches) > 1 {
+				fmt.Fprintf(e.stdout, "✓ Batch %d/%d completed\n\n", batchIdx+1, len(batches))
+			}
 		}
 
 		fmt.Fprintf(e.stdout, "✓ Step completed: %s\n\n", step.Name)
@@ -141,6 +165,53 @@ func (e *executor) ExecutePlan(ctx context.Context, file *schema.File, plan *sch
 	fmt.Fprintf(e.stdout, "Duration: %s\n", result.EndTime.Sub(result.StartTime))
 
 	return result, nil
+}
+
+func (e *executor) executeBatch(ctx context.Context, job *schema.Job, plan string, target string, hosts []ssh.Host, env map[string]string, artifactMgr artifacts.Manager, registryMgr registry.Manager) error {
+	// Use channels to coordinate parallel execution
+	type result struct {
+		host ssh.Host
+		err  error
+	}
+
+	resultChan := make(chan result, len(hosts))
+	var wg sync.WaitGroup
+
+	// Execute on each host in parallel
+	for _, host := range hosts {
+		wg.Add(1)
+		go func(h ssh.Host) {
+			defer wg.Done()
+
+			fmt.Fprintf(e.stdout, "[%s] Executing job...\n", h.Name)
+
+			err := e.executeJob(ctx, job, plan, target, h, env, artifactMgr, registryMgr)
+
+			if err != nil {
+				fmt.Fprintf(e.stderr, "[%s] ✗ Job failed: %v\n", h.Name, err)
+			} else {
+				fmt.Fprintf(e.stdout, "[%s] ✓ Job completed\n", h.Name)
+			}
+
+			resultChan <- result{host: h, err: err}
+		}(host)
+	}
+
+	// Wait for all goroutines to complete
+	go func() {
+		wg.Wait()
+		close(resultChan)
+	}()
+
+	// Collect results (abort on first failure)
+	for res := range resultChan {
+		if res.err != nil {
+			// Abort on first failure
+			return fmt.Errorf("job failed on host %s: %w", res.host.Name, res.err)
+		}
+	}
+
+	return nil
 }
 
 func (e *executor) executeJob(ctx context.Context, job *schema.Job, plan string, target string, host ssh.Host, env map[string]string, artifactMgr artifacts.Manager, registryMgr registry.Manager) error {
