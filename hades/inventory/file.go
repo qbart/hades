@@ -135,28 +135,35 @@ func LoadDirectory(rootPath string) (Inventory, error) {
 }
 
 func (f *fileInventory) ResolveTarget(name string) ([]ssh.Host, error) {
-	hostNames, ok := f.targets[name]
-	if !ok {
-		return nil, fmt.Errorf("target %q not found in inventory", name)
-	}
-
 	// Build map of hosts by name for quick lookup
 	hostMap := make(map[string]ssh.Host)
 	for _, h := range f.hosts {
 		hostMap[h.Name] = h
 	}
 
-	// Resolve host names to Host objects
-	var hosts []ssh.Host
-	for _, name := range hostNames {
-		host, ok := hostMap[name]
-		if !ok {
-			return nil, fmt.Errorf("host %q referenced in target but not defined", name)
+	// First, try to resolve as a target group
+	hostNames, ok := f.targets[name]
+	if ok {
+		// Resolve host names to Host objects
+		var hosts []ssh.Host
+		for _, name := range hostNames {
+			host, ok := hostMap[name]
+			if !ok {
+				return nil, fmt.Errorf("host %q referenced in target but not defined", name)
+			}
+			hosts = append(hosts, host)
 		}
-		hosts = append(hosts, host)
+		return hosts, nil
 	}
 
-	return hosts, nil
+	// If not a target group, try to resolve as an individual host
+	host, ok := hostMap[name]
+	if ok {
+		return []ssh.Host{host}, nil
+	}
+
+	// Not found as target group or host
+	return nil, fmt.Errorf("target or host %q not found in inventory", name)
 }
 
 func (f *fileInventory) AllHosts() []ssh.Host {

@@ -78,10 +78,46 @@ func (e *executor) ExecutePlan(ctx context.Context, file *schema.File, plan *sch
 
 	// Execute each step sequentially
 	for i, step := range plan.Steps {
+		// Determine which targets to use: CLI overrides YAML
+		stepTargets := step.Targets
+		if len(targets) > 0 {
+			stepTargets = targets
+		}
+
+		// Resolve all targets and deduplicate hosts
+		uniqueHosts := make(map[string]ssh.Host) // keyed by host name
+		for _, targetName := range stepTargets {
+			hosts, err := inv.ResolveTarget(targetName)
+			if err != nil {
+				result.Failed = true
+				result.FailedStep = step.Name
+				result.Error = fmt.Errorf("failed to resolve target %q: %w", targetName, err)
+				return result, result.Error
+			}
+			// Add hosts to unique set
+			for _, host := range hosts {
+				uniqueHosts[host.Name] = host
+			}
+		}
+
+		// Convert map to slice
+		var allHosts []ssh.Host
+		for _, host := range uniqueHosts {
+			allHosts = append(allHosts, host)
+		}
+
+		// Apply limit if specified (canary)
+		if step.Limit > 0 && step.Limit < len(allHosts) {
+			allHosts = allHosts[:step.Limit]
+		}
+
+		totalHosts := len(allHosts)
+
 		e.ui.StepProgress(i+1, len(plan.Steps), step.Name)
 		e.ui.Info("  Job: %s", step.Job)
-		targetsStr := strings.Join(step.Targets, ", ")
+		targetsStr := strings.Join(stepTargets, ", ")
 		e.ui.Info("  Targets: %s", targetsStr)
+		fmt.Fprintf(e.stdout, "  Hosts: %d\n", totalHosts)
 		fmt.Fprintf(e.stdout, "  Status: %s□%s Started\n", ctc.ForegroundYellow, ctc.Reset)
 		fmt.Fprintf(e.stdout, "  Started: %s\n\n", time.Now().Format("2006-01-02 15:04:05"))
 
@@ -114,57 +150,41 @@ func (e *executor) ExecutePlan(ctx context.Context, file *schema.File, plan *sch
 			return result, result.Error
 		}
 
-		// Execute each target separately
-		totalHosts := 0
-		for _, targetName := range step.Targets {
-			// Resolve hosts for this target
-			targetHosts, err := inv.ResolveTarget(targetName)
-			if err != nil {
+		// Execute all unique hosts
+		// Parse rollout strategy
+		strategy, err := rollout.ParseStrategy(step.Parallelism, len(allHosts))
+		if err != nil {
+			result.Failed = true
+			result.FailedStep = step.Name
+			result.Error = fmt.Errorf("invalid parallelism: %w", err)
+			return result, result.Error
+		}
+		strategy.Limit = step.Limit
+
+		// Create batches based on strategy
+		batches := strategy.CreateBatches(allHosts)
+
+		// Use first target name for logging (legacy compatibility)
+		targetName := stepTargets[0]
+
+		// Execute batches sequentially, hosts within batch in parallel
+		for batchIdx, batch := range batches {
+			if len(batches) > 1 {
+				fmt.Fprintf(e.stdout, "  Batch %d/%d (%d hosts)\n", batchIdx+1, len(batches), len(batch))
+			}
+
+			// Execute batch in parallel
+			if err := e.executeBatch(ctx, job, step.Job, result.RunID, planName, targetName, batch, mergedEnv, artifactMgr, registryMgr); err != nil {
 				result.Failed = true
 				result.FailedStep = step.Name
-				result.Error = fmt.Errorf("failed to resolve target %q: %w", targetName, err)
+				result.Error = err
+				fmt.Fprintf(e.stderr, "\n  Status: %s■%s Failed\n\n", ctc.ForegroundRed, ctc.Reset)
+				result.EndTime = time.Now()
 				return result, result.Error
 			}
 
-			// Apply limit if specified (canary)
-			if step.Limit > 0 && step.Limit < len(targetHosts) {
-				targetHosts = targetHosts[:step.Limit]
-			}
-
-			totalHosts += len(targetHosts)
-
-			// Parse rollout strategy for this target
-			strategy, err := rollout.ParseStrategy(step.Parallelism, len(targetHosts))
-			if err != nil {
-				result.Failed = true
-				result.FailedStep = step.Name
-				result.Error = fmt.Errorf("invalid parallelism: %w", err)
-				return result, result.Error
-			}
-			strategy.Limit = step.Limit
-
-			// Create batches based on strategy
-			batches := strategy.CreateBatches(targetHosts)
-
-			// Execute batches sequentially, hosts within batch in parallel
-			for batchIdx, batch := range batches {
-				if len(batches) > 1 {
-					fmt.Fprintf(e.stdout, "  Batch %d/%d (%d hosts)\n", batchIdx+1, len(batches), len(batch))
-				}
-
-				// Execute batch in parallel
-				if err := e.executeBatch(ctx, job, step.Job, result.RunID, planName, targetName, batch, mergedEnv, artifactMgr, registryMgr); err != nil {
-					result.Failed = true
-					result.FailedStep = step.Name
-					result.Error = err
-					fmt.Fprintf(e.stderr, "\n  Status: %s■%s Failed\n\n", ctc.ForegroundRed, ctc.Reset)
-					result.EndTime = time.Now()
-					return result, result.Error
-				}
-
-				if len(batches) > 1 {
-					fmt.Fprintf(e.stdout, "  ✓ Batch %d/%d completed\n", batchIdx+1, len(batches))
-				}
+			if len(batches) > 1 {
+				fmt.Fprintf(e.stdout, "  ✓ Batch %d/%d completed\n", batchIdx+1, len(batches))
 			}
 		}
 
@@ -390,17 +410,33 @@ func (e *executor) DryRun(ctx context.Context, file *schema.File, plan *schema.P
 
 	// Iterate steps
 	for i, step := range plan.Steps {
+		// Determine which targets to use: CLI overrides YAML
+		stepTargets := step.Targets
+		if len(targets) > 0 {
+			stepTargets = targets
+		}
+
 		fmt.Fprintf(e.stdout, "Step %d: %s\n", i+1, step.Name)
 		fmt.Fprintf(e.stdout, "  Job: %s\n", step.Job)
+		fmt.Fprintf(e.stdout, "  Targets: %s\n", strings.Join(stepTargets, ", "))
 
-		// Resolve hosts
-		var hosts []ssh.Host
-		for _, targetName := range step.Targets {
+		// Resolve hosts and deduplicate
+		uniqueHosts := make(map[string]ssh.Host) // keyed by host name
+		for _, targetName := range stepTargets {
 			targetHosts, err := inv.ResolveTarget(targetName)
 			if err != nil {
 				return fmt.Errorf("failed to resolve target %q: %w", targetName, err)
 			}
-			hosts = append(hosts, targetHosts...)
+			// Add hosts to unique set
+			for _, host := range targetHosts {
+				uniqueHosts[host.Name] = host
+			}
+		}
+
+		// Convert map to slice
+		var hosts []ssh.Host
+		for _, host := range uniqueHosts {
+			hosts = append(hosts, host)
 		}
 
 		if step.Limit > 0 && step.Limit < len(hosts) {
@@ -427,7 +463,7 @@ func (e *executor) DryRun(ctx context.Context, file *schema.File, plan *schema.P
 
 		// Show actions for each host
 		for _, host := range hosts {
-			runtime := types.NewRuntime(e.sshClient, artifactMgr, registryMgr, planName, step.Targets[0], host, mergedEnv, e.stdout, e.stderr, e.stdout, e.stderr)
+			runtime := types.NewRuntime(e.sshClient, artifactMgr, registryMgr, planName, stepTargets[0], host, mergedEnv, e.stdout, e.stderr, e.stdout, e.stderr)
 
 			fmt.Fprintf(e.stdout, "\n  [%s]\n", host.Name)
 			for _, actionSchema := range job.Actions {
