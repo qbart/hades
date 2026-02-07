@@ -1,0 +1,30 @@
+jobs:
+  setup-caddy-repo:
+    actions:
+      - name: Add Caddy GPG key
+        gpg:
+          src: https://dl.cloudsmith.io/public/caddy/stable/gpg.keyrings
+          path: /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+
+      - name: Add Caddy repository
+        run: |
+          echo "deb [signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.gpg] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main" \
+            | sudo tee /etc/apt/sources.list.d/caddy-stable.list
+
+      - name: Update package list
+        run: sudo apt-get update
+
+      - name: Install Caddy
+        run: sudo apt-get install -y caddy
+
+targets:
+  web-servers:
+    hosts:
+      - name: web-01
+        addr: 192.168.1.10
+
+plans:
+  install-caddy:
+    steps:
+      - job: setup-caddy-repo
+        target: web-servers

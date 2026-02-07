@@ -5,6 +5,8 @@ import (
 	"io"
 	"strings"
 	"time"
+
+	"github.com/wzshiming/ctc"
 )
 
 type Output struct {
@@ -43,7 +45,7 @@ func (o *Output) Success(format string, args ...any) {
 
 // Error prints an error message
 func (o *Output) Error(format string, args ...any) {
-	fmt.Fprintf(o.stderr, "✗ "+format+"\n", args...)
+	fmt.Fprintf(o.stderr, o.DotRed()+" "+format+"\n", args...)
 }
 
 // Warning prints a warning message
@@ -97,4 +99,8 @@ func (o *Output) PlanFailed(step, host string, err error) {
 		o.Info("Failed host: %s", host)
 	}
 	o.Info("Error: %v", err)
+}
+
+func (o *Output) DotRed() string {
+	return fmt.Sprint(ctc.ForegroundRed, "•", ctc.Reset)
 }

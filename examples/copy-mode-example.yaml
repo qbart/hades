@@ -1,0 +1,52 @@
+jobs:
+  deploy-app:
+    artifacts:
+      app-binary:
+        path: ./build/myapp
+
+    actions:
+      # Copy with default mode (0644)
+      - copy:
+          src: ./config/app.conf
+          dst: /etc/myapp/app.conf
+
+      # Copy with custom mode for executable
+      - copy:
+          artifact: app-binary
+          dst: /usr/local/bin/myapp
+          mode: 0755
+
+      # Copy script with executable permissions
+      - copy:
+          src: ./scripts/startup.sh
+          dst: /opt/myapp/startup.sh
+          mode: 0750
+
+      # Copy sensitive config with restricted permissions
+      - copy:
+          src: ./secrets/credentials.yaml
+          dst: /etc/myapp/credentials.yaml
+          mode: 0600
+
+      # GPG keyring with default mode (0644)
+      - gpg:
+          src: https://dl.cloudsmith.io/public/caddy/stable/gpg.keyrings
+          path: /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+
+      # GPG keyring with custom restrictive mode
+      - gpg:
+          src: https://example.com/private-repo/gpg.key
+          path: /usr/share/keyrings/private.gpg
+          mode: 0600
+
+targets:
+  servers:
+    hosts:
+      - name: server-01
+        addr: 192.168.1.10
+
+plans:
+  deploy:
+    steps:
+      - job: deploy-app
+        target: servers

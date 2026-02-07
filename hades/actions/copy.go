@@ -14,13 +14,19 @@ type CopyAction struct {
 	Src      string
 	Dst      string
 	Artifact string
+	Mode     uint32
 }
 
 func NewCopyAction(action *schema.ActionCopy) Action {
+	mode := action.Mode
+	if mode == 0 {
+		mode = 0644 // Default mode
+	}
 	return &CopyAction{
 		Src:      action.Src,
 		Dst:      action.Dst,
 		Artifact: action.Artifact,
+		Mode:     mode,
 	}
 }
 
@@ -59,8 +65,7 @@ func (a *CopyAction) Execute(ctx context.Context, runtime *types.Runtime) error 
 	}
 
 	// Copy file to remote host atomically
-	// Default mode 0644 for now
-	if err := sess.CopyFile(ctx, reader, a.Dst, 0644); err != nil {
+	if err := sess.CopyFile(ctx, reader, a.Dst, a.Mode); err != nil {
 		return fmt.Errorf("failed to copy %s to %s: %w", srcDesc, a.Dst, err)
 	}
 
@@ -69,7 +74,7 @@ func (a *CopyAction) Execute(ctx context.Context, runtime *types.Runtime) error 
 
 func (a *CopyAction) DryRun(ctx context.Context, runtime *types.Runtime) string {
 	if a.Artifact != "" {
-		return fmt.Sprintf("copy: artifact=%s to=%s", a.Artifact, a.Dst)
+		return fmt.Sprintf("copy: artifact=%s to=%s (mode: %o)", a.Artifact, a.Dst, a.Mode)
 	}
-	return fmt.Sprintf("copy: %s to %s", a.Src, a.Dst)
+	return fmt.Sprintf("copy: %s to %s (mode: %o)", a.Src, a.Dst, a.Mode)
 }

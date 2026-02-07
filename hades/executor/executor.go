@@ -264,6 +264,9 @@ func (e *executor) createAction(actionSchema *schema.Action) (actions.Action, er
 	if actionSchema.Wait != nil {
 		return actions.NewWaitAction(actionSchema.Wait), nil
 	}
+	if actionSchema.Gpg != nil {
+		return actions.NewGpgAction(actionSchema.Gpg), nil
+	}
 
 	return nil, fmt.Errorf("no action type specified")
 }

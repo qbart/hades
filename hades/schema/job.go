@@ -19,6 +19,7 @@ type Action struct {
 	Push     *ActionPush     `yaml:"push,omitempty"`
 	Pull     *ActionPull     `yaml:"pull,omitempty"`
 	Wait     *ActionWait     `yaml:"wait,omitempty"`
+	Gpg      *ActionGpg      `yaml:"gpg,omitempty"`
 }
 
 type ActionRun string
@@ -27,6 +28,7 @@ type ActionCopy struct {
 	Src      string `yaml:"src,omitempty"`
 	Dst      string `yaml:"dst"`
 	Artifact string `yaml:"artifact,omitempty"`
+	Mode     uint32 `yaml:"mode,omitempty"`
 }
 
 type ActionTemplate struct {
@@ -56,4 +58,11 @@ type ActionPull struct {
 type ActionWait struct {
 	Message string `yaml:"message,omitempty"`
 	Timeout string `yaml:"timeout,omitempty"`
+}
+
+type ActionGpg struct {
+	Src     string `yaml:"src"`
+	Path    string `yaml:"path"`
+	Mode    uint32 `yaml:"mode,omitempty"`
+	Dearmor bool   `yaml:"dearmor,omitempty"`
 }

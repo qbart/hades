@@ -40,11 +40,15 @@ func LoadFile(path string) (Inventory, error) {
 	// Convert host definitions to ssh.Host
 	var hosts []ssh.Host
 	for name, h := range file.Hosts {
+		keyPath, err := utils.ExpandPath(h.IdentityFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to expand identity_file for host %q: %w", name, err)
+		}
 		hosts = append(hosts, ssh.Host{
 			Name:    name,
 			Address: h.Addr,
 			User:    h.User,
-			KeyPath: h.IdentityFile,
+			KeyPath: keyPath,
 		})
 	}
 
@@ -91,11 +95,15 @@ func LoadDirectory(rootPath string) (Inventory, error) {
 			if _, exists := allHosts[name]; exists {
 				return fmt.Errorf("duplicate host %q found in %s", name, path)
 			}
+			keyPath, err := utils.ExpandPath(h.IdentityFile)
+			if err != nil {
+				return fmt.Errorf("failed to expand identity_file for host %q in %s: %w", name, path, err)
+			}
 			allHosts[name] = ssh.Host{
 				Name:    name,
 				Address: h.Addr,
 				User:    h.User,
-				KeyPath: h.IdentityFile,
+				KeyPath: keyPath,
 			}
 		}
 

@@ -111,7 +111,6 @@ func (l *Loader) LoadJob(file *schema.File, name string) (*schema.Job, error) {
 
 // LoadPlan retrieves a plan by name from the file
 func (l *Loader) LoadPlan(file *schema.File, name string) (*schema.Plan, error) {
-	fmt.Println(file.Plans)
 	plan, ok := file.Plans[name]
 	if !ok {
 		return nil, fmt.Errorf("plan %q not found", name)
@@ -153,6 +152,9 @@ func (l *Loader) Validate(file *schema.File) error {
 				count++
 			}
 			if action.Wait != nil {
+				count++
+			}
+			if action.Gpg != nil {
 				count++
 			}
 			if count == 0 {

@@ -1,0 +1,36 @@
+# Example inventory demonstrating tilde expansion for SSH keys
+
+hosts:
+  web-01:
+    addr: 192.168.1.10
+    user: deploy
+    identity_file: ~/.ssh/chess.pem
+
+  web-02:
+    addr: 192.168.1.11
+    user: deploy
+    identity_file: ~/.ssh/chess.pem
+
+  db-01:
+    addr: 192.168.1.20
+    user: admin
+    identity_file: ~/.ssh/database-key.pem
+
+  staging-server:
+    addr: staging.example.com
+    user: ubuntu
+    identity_file: ~/Documents/keys/staging.pem
+
+targets:
+  web-servers:
+    - web-01
+    - web-02
+
+  database:
+    - db-01
+
+  all:
+    - web-01
+    - web-02
+    - db-01
+    - staging-server
