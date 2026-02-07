@@ -51,6 +51,7 @@ func (h *Hades) buildRunCommand() *cobra.Command {
 		targets   []string
 		envVars   []string
 		dryRun    bool
+		follow    bool
 	)
 
 	cmd := &cobra.Command{
@@ -60,6 +61,9 @@ func (h *Hades) buildRunCommand() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if !follow {
+				panic("not implemented: only follow mode (-f) is currently supported")
+			}
 			planName := args[0]
 			return h.runPlan(planName, configDir, targets, envVars, dryRun)
 		},
@@ -69,6 +73,7 @@ func (h *Hades) buildRunCommand() *cobra.Command {
 	cmd.Flags().StringSliceVarP(&targets, "target", "t", nil, "Target groups to execute on")
 	cmd.Flags().StringSliceVarP(&envVars, "env", "e", nil, "Environment variables (KEY=VALUE)")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Show what would be executed without running")
+	cmd.Flags().BoolVarP(&follow, "follow", "f", false, "Stream output in real-time (follow mode)")
 
 	return cmd
 }
