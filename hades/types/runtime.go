@@ -11,19 +11,22 @@ import (
 )
 
 type Runtime struct {
-	SSHClient   ssh.Client
-	ArtifactMgr artifacts.Manager
-	RegistryMgr registry.Manager
-	Env         map[string]string
-	RunID       string
-	Plan        string
-	Target      string
-	Host        ssh.Host
-	Stdout      io.Writer
-	Stderr      io.Writer
+	SSHClient      ssh.Client
+	ArtifactMgr    artifacts.Manager
+	RegistryMgr    registry.Manager
+	Env            map[string]string
+	RunID          string
+	Plan           string
+	Target         string
+	Host           ssh.Host
+	Stdout         io.Writer // Logs only
+	Stderr         io.Writer // Logs only
+	ConsoleStdout  io.Writer // Console only
+	ConsoleStderr  io.Writer // Console only
+	ActionDesc     string    // For formatted console messages
 }
 
-func NewRuntime(sshClient ssh.Client, artifactMgr artifacts.Manager, registryMgr registry.Manager, plan string, target string, host ssh.Host, userEnv map[string]string, stdout, stderr io.Writer) *Runtime {
+func NewRuntime(sshClient ssh.Client, artifactMgr artifacts.Manager, registryMgr registry.Manager, plan string, target string, host ssh.Host, userEnv map[string]string, stdout, stderr io.Writer, consoleStdout, consoleStderr io.Writer) *Runtime {
 	runID := uuid.New().String()
 
 	// Build environment with HADES_* built-ins
@@ -42,16 +45,18 @@ func NewRuntime(sshClient ssh.Client, artifactMgr artifacts.Manager, registryMgr
 	env["HADES_HOST_ADDR"] = host.Address
 
 	return &Runtime{
-		SSHClient:   sshClient,
-		ArtifactMgr: artifactMgr,
-		RegistryMgr: registryMgr,
-		Env:         env,
-		RunID:       runID,
-		Plan:        plan,
-		Target:      target,
-		Host:        host,
-		Stdout:      stdout,
-		Stderr:      stderr,
+		SSHClient:     sshClient,
+		ArtifactMgr:   artifactMgr,
+		RegistryMgr:   registryMgr,
+		Env:           env,
+		RunID:         runID,
+		Plan:          plan,
+		Target:        target,
+		Host:          host,
+		Stdout:        stdout,
+		Stderr:        stderr,
+		ConsoleStdout: consoleStdout,
+		ConsoleStderr: consoleStderr,
 	}
 }
 

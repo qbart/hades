@@ -109,9 +109,13 @@ func (a *CopyAction) Execute(ctx context.Context, runtime *types.Runtime) error 
 	// Compare checksums and decide
 	if exists && localChecksum == remoteChecksum {
 		// SKIP: Checksums match - file is identical
-		dotYellow := fmt.Sprint(ctc.ForegroundYellow, "⏺", ctc.Reset)
-		fmt.Fprintf(runtime.Stdout, "%s Skipping %s (already up to date)\n",
-			dotYellow, a.Dst)
+		// Log: plain text
+		fmt.Fprintf(runtime.Stdout, "Skipping %s (already up to date)\n", a.Dst)
+		// Console: with action format and skip symbol (blue)
+		if runtime.ConsoleStdout != nil {
+			fmt.Fprintf(runtime.ConsoleStdout, "[%s] %s○%s Action %s: skipped (%s already up to date)\n",
+				runtime.Host.Name, ctc.ForegroundBlue, ctc.Reset, runtime.ActionDesc, a.Dst)
+		}
 		return nil
 	}
 

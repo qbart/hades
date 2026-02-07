@@ -237,8 +237,8 @@ func (e *executor) executeJob(ctx context.Context, job *schema.Job, jobName stri
 	}
 	defer hostLogger.Close()
 
-	// Create runtime context with logger writers
-	runtime := types.NewRuntime(e.sshClient, artifactMgr, registryMgr, plan, target, host, env, hostLogger.Stdout(), hostLogger.Stderr())
+	// Create runtime context with logger writers and console writers
+	runtime := types.NewRuntime(e.sshClient, artifactMgr, registryMgr, plan, target, host, env, hostLogger.Stdout(), hostLogger.Stderr(), e.stdout, e.stderr)
 
 	// Evaluate guard condition first (before showing job starting)
 	if job.Guard != nil {
@@ -267,6 +267,9 @@ func (e *executor) executeJob(ctx context.Context, job *schema.Job, jobName stri
 		if actionSchema.Name != "" {
 			actionDesc = fmt.Sprintf("[%d] %s (%s)", i, actionType, actionSchema.Name)
 		}
+
+		// Set action description in runtime for use by actions
+		runtime.ActionDesc = actionDesc
 
 		// Write delimiter to log (with optional name)
 		if err := hostLogger.WriteJobDelimiter(jobName, actionType, actionSchema.Name, i); err != nil {
@@ -430,7 +433,7 @@ func (e *executor) DryRun(ctx context.Context, file *schema.File, plan *schema.P
 
 		// Show actions for each host
 		for _, host := range hosts {
-			runtime := types.NewRuntime(e.sshClient, artifactMgr, registryMgr, planName, step.Targets[0], host, mergedEnv, e.stdout, e.stderr)
+			runtime := types.NewRuntime(e.sshClient, artifactMgr, registryMgr, planName, step.Targets[0], host, mergedEnv, e.stdout, e.stderr, e.stdout, e.stderr)
 
 			fmt.Fprintf(e.stdout, "\n  [%s]\n", host.Name)
 			for _, actionSchema := range job.Actions {
