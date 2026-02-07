@@ -82,6 +82,8 @@ func (e *executor) ExecutePlan(ctx context.Context, file *schema.File, plan *sch
 		e.ui.Info("  Job: %s", step.Job)
 		targetsStr := strings.Join(step.Targets, ", ")
 		e.ui.Info("  Targets: %s", targetsStr)
+		fmt.Fprintf(e.stdout, "  Status: %s□%s Started\n", ctc.ForegroundYellow, ctc.Reset)
+		fmt.Fprintf(e.stdout, "  Started: %s\n\n", time.Now().Format("2006-01-02 15:04:05"))
 
 		// Load job once for this step
 		job, err := e.loadJob(file, step.Job)
@@ -131,9 +133,6 @@ func (e *executor) ExecutePlan(ctx context.Context, file *schema.File, plan *sch
 
 			totalHosts += len(targetHosts)
 
-			// Target started
-			fmt.Fprintf(e.stdout, "\n%s□%s Target %q: started (%d hosts)\n", ctc.ForegroundYellow, ctc.Reset, targetName, len(targetHosts))
-
 			// Parse rollout strategy for this target
 			strategy, err := rollout.ParseStrategy(step.Parallelism, len(targetHosts))
 			if err != nil {
@@ -155,11 +154,10 @@ func (e *executor) ExecutePlan(ctx context.Context, file *schema.File, plan *sch
 
 				// Execute batch in parallel
 				if err := e.executeBatch(ctx, job, step.Job, result.RunID, planName, targetName, batch, mergedEnv, artifactMgr, registryMgr); err != nil {
-					// Target failed
-					fmt.Fprintf(e.stderr, "%s■%s Target %q: failed\n", ctc.ForegroundRed, ctc.Reset, targetName)
 					result.Failed = true
 					result.FailedStep = step.Name
 					result.Error = err
+					fmt.Fprintf(e.stderr, "\n  Status: %s■%s Failed\n\n", ctc.ForegroundRed, ctc.Reset)
 					result.EndTime = time.Now()
 					return result, result.Error
 				}
@@ -168,14 +166,10 @@ func (e *executor) ExecutePlan(ctx context.Context, file *schema.File, plan *sch
 					fmt.Fprintf(e.stdout, "  ✓ Batch %d/%d completed\n", batchIdx+1, len(batches))
 				}
 			}
-
-			// Target completed
-			fmt.Fprintf(e.stdout, "%s■%s Target %q: completed (%d hosts)\n", ctc.ForegroundGreen, ctc.Reset, targetName, len(targetHosts))
 		}
 
-		// Step completion summary
-		fmt.Fprintf(e.stdout, "\n%s✓%s Step completed: %s\n", ctc.ForegroundGreen, ctc.Reset, step.Name)
-		fmt.Fprintf(e.stdout, "  Targets: %s (%d hosts)\n\n", targetsStr, totalHosts)
+		// Step completion
+		fmt.Fprintf(e.stdout, "\n  Status: %s■%s Completed\n\n", ctc.ForegroundGreen, ctc.Reset)
 	}
 
 	result.EndTime = time.Now()
