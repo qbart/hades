@@ -54,9 +54,11 @@ func (h *Hades) buildRunCommand() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "run [plan]",
-		Short: "Execute a plan",
-		Args:  cobra.ExactArgs(1),
+		Use:           "run [plan]",
+		Short:         "Execute a plan",
+		Args:          cobra.ExactArgs(1),
+		SilenceUsage:  true,
+		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			planName := args[0]
 			return h.runPlan(planName, configDir, targets, envVars, dryRun)
