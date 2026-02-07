@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -79,29 +80,10 @@ func (e *executor) ExecutePlan(ctx context.Context, file *schema.File, plan *sch
 	for i, step := range plan.Steps {
 		e.ui.StepProgress(i+1, len(plan.Steps), step.Name)
 		e.ui.Info("  Job: %s", step.Job)
+		targetsStr := strings.Join(step.Targets, ", ")
+		e.ui.Info("  Targets: %s", targetsStr)
 
-		// Resolve hosts from targets
-		var hosts []ssh.Host
-		for _, targetName := range step.Targets {
-			targetHosts, err := inv.ResolveTarget(targetName)
-			if err != nil {
-				result.Failed = true
-				result.FailedStep = step.Name
-				result.Error = fmt.Errorf("failed to resolve target %q: %w", targetName, err)
-				return result, result.Error
-			}
-			hosts = append(hosts, targetHosts...)
-		}
-
-		// Apply limit if specified (canary)
-		if step.Limit > 0 && step.Limit < len(hosts) {
-			fmt.Fprintf(e.stdout, "  Limiting to %d hosts (canary)\n", step.Limit)
-			hosts = hosts[:step.Limit]
-		}
-
-		fmt.Fprintf(e.stdout, "  Hosts: %d\n\n", len(hosts))
-
-		// Load job
+		// Load job once for this step
 		job, err := e.loadJob(file, step.Job)
 		if err != nil {
 			result.Failed = true
@@ -130,45 +112,70 @@ func (e *executor) ExecutePlan(ctx context.Context, file *schema.File, plan *sch
 			return result, result.Error
 		}
 
-		// Parse rollout strategy
-		strategy, err := rollout.ParseStrategy(step.Parallelism, len(hosts))
-		if err != nil {
-			result.Failed = true
-			result.FailedStep = step.Name
-			result.Error = fmt.Errorf("invalid parallelism: %w", err)
-			return result, result.Error
-		}
-		strategy.Limit = step.Limit
-
-		// Create batches based on strategy
-		batches := strategy.CreateBatches(hosts)
-		fmt.Fprintf(e.stdout, "  Batches: %d (parallelism: %s)\n", len(batches), step.Parallelism)
-		if step.Limit > 0 {
-			fmt.Fprintf(e.stdout, "  Limited to: %d hosts\n", step.Limit)
-		}
-		fmt.Fprintf(e.stdout, "\n")
-
-		// Execute batches sequentially, hosts within batch in parallel
-		for batchIdx, batch := range batches {
-			if len(batches) > 1 {
-				fmt.Fprintf(e.stdout, "Batch %d/%d (%d hosts)\n", batchIdx+1, len(batches), len(batch))
-			}
-
-			// Execute batch in parallel
-			if err := e.executeBatch(ctx, job, step.Job, result.RunID, planName, step.Targets[0], batch, mergedEnv, artifactMgr, registryMgr); err != nil {
+		// Execute each target separately
+		totalHosts := 0
+		for _, targetName := range step.Targets {
+			// Resolve hosts for this target
+			targetHosts, err := inv.ResolveTarget(targetName)
+			if err != nil {
 				result.Failed = true
 				result.FailedStep = step.Name
-				result.Error = err
-				result.EndTime = time.Now()
+				result.Error = fmt.Errorf("failed to resolve target %q: %w", targetName, err)
 				return result, result.Error
 			}
 
-			if len(batches) > 1 {
-				fmt.Fprintf(e.stdout, "✓ Batch %d/%d completed\n\n", batchIdx+1, len(batches))
+			// Apply limit if specified (canary)
+			if step.Limit > 0 && step.Limit < len(targetHosts) {
+				targetHosts = targetHosts[:step.Limit]
 			}
+
+			totalHosts += len(targetHosts)
+
+			// Target started
+			fmt.Fprintf(e.stdout, "\n%s□%s Target %q: started (%d hosts)\n", ctc.ForegroundYellow, ctc.Reset, targetName, len(targetHosts))
+
+			// Parse rollout strategy for this target
+			strategy, err := rollout.ParseStrategy(step.Parallelism, len(targetHosts))
+			if err != nil {
+				result.Failed = true
+				result.FailedStep = step.Name
+				result.Error = fmt.Errorf("invalid parallelism: %w", err)
+				return result, result.Error
+			}
+			strategy.Limit = step.Limit
+
+			// Create batches based on strategy
+			batches := strategy.CreateBatches(targetHosts)
+
+			// Execute batches sequentially, hosts within batch in parallel
+			for batchIdx, batch := range batches {
+				if len(batches) > 1 {
+					fmt.Fprintf(e.stdout, "  Batch %d/%d (%d hosts)\n", batchIdx+1, len(batches), len(batch))
+				}
+
+				// Execute batch in parallel
+				if err := e.executeBatch(ctx, job, step.Job, result.RunID, planName, targetName, batch, mergedEnv, artifactMgr, registryMgr); err != nil {
+					// Target failed
+					fmt.Fprintf(e.stderr, "%s■%s Target %q: failed\n", ctc.ForegroundRed, ctc.Reset, targetName)
+					result.Failed = true
+					result.FailedStep = step.Name
+					result.Error = err
+					result.EndTime = time.Now()
+					return result, result.Error
+				}
+
+				if len(batches) > 1 {
+					fmt.Fprintf(e.stdout, "  ✓ Batch %d/%d completed\n", batchIdx+1, len(batches))
+				}
+			}
+
+			// Target completed
+			fmt.Fprintf(e.stdout, "%s■%s Target %q: completed (%d hosts)\n", ctc.ForegroundGreen, ctc.Reset, targetName, len(targetHosts))
 		}
 
-		fmt.Fprintf(e.stdout, "✓ Step completed: %s\n\n", step.Name)
+		// Step completion summary
+		fmt.Fprintf(e.stdout, "\n%s✓%s Step completed: %s\n", ctc.ForegroundGreen, ctc.Reset, step.Name)
+		fmt.Fprintf(e.stdout, "  Targets: %s (%d hosts)\n\n", targetsStr, totalHosts)
 	}
 
 	result.EndTime = time.Now()
@@ -193,14 +200,12 @@ func (e *executor) executeBatch(ctx context.Context, job *schema.Job, jobName st
 		go func(h ssh.Host) {
 			defer wg.Done()
 
-			fmt.Fprintf(e.stdout, "%s[%s]%s Executing job...\n", ctc.ForegroundGreen, h.Name, ctc.Reset)
-
 			err := e.executeJob(ctx, job, jobName, runID, plan, target, h, env, artifactMgr, registryMgr)
 
 			if err != nil {
-				fmt.Fprintf(e.stderr, "[%s] %s⏺%s Job failed: %v\n", h.Name, ctc.ForegroundRed, ctc.Reset, err)
+				fmt.Fprintf(e.stderr, "[%s] %s◆%s Job %q: failed - %v\n", h.Name, ctc.ForegroundRed, ctc.Reset, jobName, err)
 			} else {
-				fmt.Fprintf(e.stdout, "[%s] %s⏺%s Job completed\n", h.Name, ctc.ForegroundGreen, ctc.Reset)
+				fmt.Fprintf(e.stdout, "[%s] %s◆%s Job %q: completed\n", h.Name, ctc.ForegroundGreen, ctc.Reset, jobName)
 			}
 
 			resultChan <- result{host: h, err: err}
@@ -235,31 +240,41 @@ func (e *executor) executeJob(ctx context.Context, job *schema.Job, jobName stri
 	// Create runtime context with logger writers
 	runtime := types.NewRuntime(e.sshClient, artifactMgr, registryMgr, plan, target, host, env, hostLogger.Stdout(), hostLogger.Stderr())
 
-	// Evaluate guard condition
+	// Evaluate guard condition first (before showing job starting)
 	if job.Guard != nil {
-		guardDesc := actions.FormatGuardCondition(job.Guard, runtime.Env)
-		e.ui.ShowAction(runtime.Host.Name, guardDesc)
-
 		result, err := actions.EvaluateGuard(ctx, job.Guard, runtime)
 		if err != nil {
 			return fmt.Errorf("guard evaluation failed: %w", err)
 		}
 
 		if !result.Pass {
-			e.ui.ShowGuardSkip(runtime.Host.Name, job.Guard.If)
+			// Console: Job skipped
+			fmt.Fprintf(e.stdout, "[%s] %s◇%s Job %q: skipped (guard failed)\n", host.Name, ctc.ForegroundBlue, ctc.Reset, jobName)
 			return nil // Skip job, but not an error
 		}
 	}
+
+	// Console: Job starting (only if guard passed or no guard)
+	fmt.Fprintf(e.stdout, "[%s] %s◇%s Job %q: starting\n", host.Name, ctc.ForegroundYellow, ctc.Reset, jobName)
 
 	// Execute each action sequentially
 	for i, actionSchema := range job.Actions {
 		// Get action type for delimiter
 		actionType := getActionType(&actionSchema)
 
+		// Format action description for console
+		actionDesc := fmt.Sprintf("[%d] %s", i, actionType)
+		if actionSchema.Name != "" {
+			actionDesc = fmt.Sprintf("[%d] %s (%s)", i, actionType, actionSchema.Name)
+		}
+
 		// Write delimiter to log (with optional name)
 		if err := hostLogger.WriteJobDelimiter(jobName, actionType, actionSchema.Name, i); err != nil {
 			return fmt.Errorf("failed to write log delimiter: %w", err)
 		}
+
+		// Console: Action starting
+		fmt.Fprintf(e.stdout, "[%s] %s◌%s Action %s: in progress\n", host.Name, ctc.ForegroundYellow, ctc.Reset, actionDesc)
 
 		action, err := e.createAction(&actionSchema, hostLogger)
 		if err != nil {
@@ -267,8 +282,13 @@ func (e *executor) executeJob(ctx context.Context, job *schema.Job, jobName stri
 		}
 
 		if err := action.Execute(ctx, runtime); err != nil {
+			// Console: Action failed
+			fmt.Fprintf(e.stderr, "[%s] %s●%s Action %s: failed - %v\n", host.Name, ctc.ForegroundRed, ctc.Reset, actionDesc, err)
 			return fmt.Errorf("action %d failed: %w", i, err)
 		}
+
+		// Console: Action completed
+		fmt.Fprintf(e.stdout, "[%s] %s●%s Action %s: completed\n", host.Name, ctc.ForegroundGreen, ctc.Reset, actionDesc)
 	}
 
 	return nil
