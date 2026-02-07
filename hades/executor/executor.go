@@ -227,6 +227,22 @@ func (e *executor) executeJob(ctx context.Context, job *schema.Job, plan string,
 	// Create runtime context
 	runtime := types.NewRuntime(e.sshClient, artifactMgr, registryMgr, plan, target, host, env)
 
+	// Evaluate guard condition
+	if job.Guard != nil {
+		guardDesc := actions.FormatGuardCondition(job.Guard, runtime.Env)
+		e.ui.ShowAction(runtime.Host.Name, guardDesc)
+
+		result, err := actions.EvaluateGuard(ctx, job.Guard, runtime)
+		if err != nil {
+			return fmt.Errorf("guard evaluation failed: %w", err)
+		}
+
+		if !result.Pass {
+			e.ui.ShowGuardSkip(runtime.Host.Name, job.Guard.If)
+			return nil // Skip job, but not an error
+		}
+	}
+
 	// Execute each action sequentially
 	for i, actionSchema := range job.Actions {
 		action, err := e.createAction(&actionSchema)

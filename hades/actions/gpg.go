@@ -95,7 +95,7 @@ func (a *GpgAction) Execute(ctx context.Context, runtime *types.Runtime) error {
 		}
 
 		// Run gpg --dearmor to convert ASCII to binary
-		dearmorCmd := fmt.Sprintf("gpg --dearmor -o %s < %s && chmod %o %s && rm -f %s",
+		dearmorCmd := fmt.Sprintf("gpg --yes --dearmor -o %s < %s && chmod %o %s && rm -f %s",
 			path, tmpPath, a.Mode, path, tmpPath)
 
 		var stderr io.Writer

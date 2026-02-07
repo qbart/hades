@@ -102,5 +102,23 @@ func (o *Output) PlanFailed(step, host string, err error) {
 }
 
 func (o *Output) DotRed() string {
+	// ⏺
 	return fmt.Sprint(ctc.ForegroundRed, "•", ctc.Reset)
+}
+
+func (o *Output) DotYellow() string {
+	return fmt.Sprint(ctc.ForegroundYellow, "⏺", ctc.Reset)
+}
+
+// ShowAction prints an action being executed on a host
+func (o *Output) ShowAction(host, description string) {
+	timestamp := time.Now().Format("15:04:05")
+	fmt.Fprintf(o.stdout, "[%s] [%s] %s\n", timestamp, host, description)
+}
+
+// ShowGuardSkip prints a message when a job is skipped due to guard failure
+func (o *Output) ShowGuardSkip(host, condition string) {
+	timestamp := time.Now().Format("15:04:05")
+	msg := fmt.Sprintf("%s guard failed, skipping job (condition: %s)", o.DotYellow(), condition)
+	fmt.Fprintf(o.stdout, "[%s] [%s] %s\n", timestamp, host, msg)
 }

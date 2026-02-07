@@ -1,0 +1,57 @@
+version: 1
+
+# Simple test file for guard functionality
+# Tests both passing and failing guards
+
+plans:
+  test-guards:
+    description: Test guard conditions
+    steps:
+      - name: Test passing guard
+        job: job-pass
+        targets:
+          - test
+      - name: Test failing guard
+        job: job-skip
+        targets:
+          - test
+      - name: Test guard with env vars
+        job: job-with-env
+        targets:
+          - test
+        env:
+          TEST_VAR: "enabled"
+
+targets:
+  test:
+    inventory: ./inventory/test.hades.yaml
+
+jobs:
+  job-pass:
+    # This guard will always pass (true returns exit 0)
+    guard:
+      if: "true"
+    actions:
+      - run: echo "✓ This job should run (guard passed)"
+
+  job-skip:
+    # This guard will always fail (false returns exit 1)
+    guard:
+      if: "false"
+    actions:
+      - run: echo "✗ This job should NOT run (guard failed)"
+
+  job-with-env:
+    env:
+      TEST_VAR:
+        default: "disabled"
+    # This guard checks environment variable
+    guard:
+      if: "test ${TEST_VAR} = enabled"
+    actions:
+      - run: echo "✓ Environment variable test passed: TEST_VAR=${TEST_VAR}"
+
+  job-no-guard:
+    # No guard = always runs
+    actions:
+      - run: echo "✓ This job has no guard, so it always runs"

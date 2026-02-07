@@ -2,9 +2,14 @@ package schema
 
 type Job struct {
 	Local     bool                `yaml:"local"`
+	Guard     *Guard              `yaml:"guard,omitempty"`
 	Env       map[string]Env      `yaml:"env"`
 	Artifacts map[string]Artifact `yaml:"artifacts"`
 	Actions   []Action            `yaml:"actions"`
+}
+
+type Guard struct {
+	If string `yaml:"if"`
 }
 
 type Artifact struct {
