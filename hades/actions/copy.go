@@ -1,13 +1,19 @@
 package actions
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/SoftKiwiGames/hades/hades/schema"
+	"github.com/SoftKiwiGames/hades/hades/ssh"
 	"github.com/SoftKiwiGames/hades/hades/types"
+	"github.com/wzshiming/ctc"
 )
 
 type CopyAction struct {
@@ -31,6 +37,61 @@ func NewCopyAction(action *schema.ActionCopy) Action {
 }
 
 func (a *CopyAction) Execute(ctx context.Context, runtime *types.Runtime) error {
+	// Prepare source and calculate checksum
+	var reader io.ReadCloser
+	var localChecksum string
+	var srcDesc string
+
+	if a.Artifact != "" {
+		// ARTIFACTS: Read into memory buffer
+		art, err := runtime.ArtifactMgr.Get(a.Artifact)
+		if err != nil {
+			return fmt.Errorf("failed to get artifact %s: %w", a.Artifact, err)
+		}
+		defer art.Close()
+
+		// Read entire artifact into memory
+		data, err := io.ReadAll(art)
+		if err != nil {
+			return fmt.Errorf("failed to read artifact: %w", err)
+		}
+
+		// Calculate checksum from buffer
+		h := sha256.New()
+		h.Write(data)
+		localChecksum = hex.EncodeToString(h.Sum(nil))
+
+		// Create reader from buffer
+		reader = io.NopCloser(bytes.NewReader(data))
+		srcDesc = fmt.Sprintf("artifact:%s", a.Artifact)
+
+	} else if a.Src != "" {
+		// LOCAL FILES: Read file, calculate checksum
+		f, err := os.Open(a.Src)
+		if err != nil {
+			return fmt.Errorf("failed to open source file %s: %w", a.Src, err)
+		}
+
+		// Calculate checksum
+		localChecksum, err = calculateChecksum(f)
+		f.Close()
+		if err != nil {
+			return fmt.Errorf("failed to calculate checksum: %w", err)
+		}
+
+		// Reopen file for copying (reader was consumed by checksum)
+		f2, err := os.Open(a.Src)
+		if err != nil {
+			return fmt.Errorf("failed to reopen source: %w", err)
+		}
+		reader = f2
+		srcDesc = a.Src
+
+	} else {
+		return fmt.Errorf("either src or artifact must be specified")
+	}
+	defer reader.Close()
+
 	// Create SSH session
 	sess, err := runtime.SSHClient.Connect(ctx, runtime.Host)
 	if err != nil {
@@ -38,33 +99,23 @@ func (a *CopyAction) Execute(ctx context.Context, runtime *types.Runtime) error 
 	}
 	defer sess.Close()
 
-	// Determine source
-	var reader io.ReadCloser
-	var srcDesc string
-
-	if a.Artifact != "" {
-		// Get artifact from manager
-		art, err := runtime.ArtifactMgr.Get(a.Artifact)
-		if err != nil {
-			return fmt.Errorf("failed to get artifact %s: %w", a.Artifact, err)
-		}
-		defer art.Close()
-		reader = art
-		srcDesc = fmt.Sprintf("artifact:%s", a.Artifact)
-	} else if a.Src != "" {
-		// Read from local file
-		f, err := os.Open(a.Src)
-		if err != nil {
-			return fmt.Errorf("failed to open source file %s: %w", a.Src, err)
-		}
-		defer f.Close()
-		reader = f
-		srcDesc = a.Src
-	} else {
-		return fmt.Errorf("either src or artifact must be specified")
+	// Get remote checksum (with fallback on error)
+	remoteChecksum, exists, err := getRemoteChecksum(ctx, sess, a.Dst)
+	if err != nil {
+		// Severe error - fail
+		return fmt.Errorf("failed to check remote file: %w", err)
 	}
 
-	// Copy file to remote host atomically
+	// Compare checksums and decide
+	if exists && localChecksum == remoteChecksum {
+		// SKIP: Checksums match - file is identical
+		dotYellow := fmt.Sprint(ctc.ForegroundYellow, "⏺", ctc.Reset)
+		fmt.Printf("[%s] %s Skipping %s (already up to date)\n",
+			runtime.Host.Name, dotYellow, a.Dst)
+		return nil
+	}
+
+	// Copy file (checksums differ, file doesn't exist, or tool missing)
 	if err := sess.CopyFile(ctx, reader, a.Dst, a.Mode); err != nil {
 		return fmt.Errorf("failed to copy %s to %s: %w", srcDesc, a.Dst, err)
 	}
@@ -74,7 +125,47 @@ func (a *CopyAction) Execute(ctx context.Context, runtime *types.Runtime) error 
 
 func (a *CopyAction) DryRun(ctx context.Context, runtime *types.Runtime) string {
 	if a.Artifact != "" {
-		return fmt.Sprintf("copy: artifact=%s to=%s (mode: %o)", a.Artifact, a.Dst, a.Mode)
+		return fmt.Sprintf("copy: artifact=%s to=%s (mode: %o, verify checksum)", a.Artifact, a.Dst, a.Mode)
 	}
-	return fmt.Sprintf("copy: %s to %s (mode: %o)", a.Src, a.Dst, a.Mode)
+	return fmt.Sprintf("copy: %s to %s (mode: %o, verify checksum)", a.Src, a.Dst, a.Mode)
+}
+
+// calculateChecksum reads content and returns SHA-256 hash
+func calculateChecksum(reader io.Reader) (string, error) {
+	h := sha256.New()
+	if _, err := io.Copy(h, reader); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// getRemoteChecksum returns (checksum, exists, error)
+// If sha256sum is not available, returns ("", false, nil) to trigger fallback
+func getRemoteChecksum(ctx context.Context, sess ssh.Session, remotePath string) (string, bool, error) {
+	var stdout bytes.Buffer
+
+	// Use shell command that handles missing file gracefully
+	cmd := fmt.Sprintf("sha256sum %s 2>/dev/null || echo NOTFOUND", remotePath)
+
+	err := sess.Run(ctx, cmd, &stdout, io.Discard)
+	if err != nil {
+		// Command failed - likely sha256sum not found or severe error
+		// Return false to trigger fallback (copy without check)
+		return "", false, nil
+	}
+
+	output := strings.TrimSpace(stdout.String())
+
+	// File doesn't exist or sha256sum not available
+	if output == "NOTFOUND" || output == "" {
+		return "", false, nil
+	}
+
+	// Parse "abc123...  /path/to/file" format
+	parts := strings.Fields(output)
+	if len(parts) < 1 {
+		return "", false, nil
+	}
+
+	return parts[0], true, nil
 }
