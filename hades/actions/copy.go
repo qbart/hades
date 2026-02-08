@@ -41,6 +41,7 @@ func (a *CopyAction) Execute(ctx context.Context, runtime *types.Runtime) error 
 	var reader io.ReadCloser
 	var localChecksum string
 	var srcDesc string
+	var fileSize int64
 
 	if a.Artifact != "" {
 		// ARTIFACTS: Read into memory buffer
@@ -55,6 +56,8 @@ func (a *CopyAction) Execute(ctx context.Context, runtime *types.Runtime) error 
 		if err != nil {
 			return fmt.Errorf("failed to read artifact: %w", err)
 		}
+
+		fileSize = int64(len(data))
 
 		// Calculate checksum from buffer
 		h := sha256.New()
@@ -71,6 +74,14 @@ func (a *CopyAction) Execute(ctx context.Context, runtime *types.Runtime) error 
 		if err != nil {
 			return fmt.Errorf("failed to open source file %s: %w", a.Src, err)
 		}
+
+		// Get file size
+		stat, err := f.Stat()
+		if err != nil {
+			f.Close()
+			return fmt.Errorf("failed to stat file: %w", err)
+		}
+		fileSize = stat.Size()
 
 		// Calculate checksum
 		localChecksum, err = calculateChecksum(f)
@@ -109,15 +120,18 @@ func (a *CopyAction) Execute(ctx context.Context, runtime *types.Runtime) error 
 		return fmt.Errorf("failed to check remote file: %w", err)
 	}
 
+	// Format file size
+	sizeStr := formatFileSize(fileSize)
+
 	// Compare checksums and decide
 	if exists && localChecksum == remoteChecksum {
 		// SKIP: Checksums match - file is identical
 		// Log: plain text
-		fmt.Fprintf(runtime.Stdout, "Skipping %s (already up to date)\n", dst)
+		fmt.Fprintf(runtime.Stdout, "Skipping %s (%s, already up to date)\n", dst, sizeStr)
 		// Console: with action format and skip symbol (blue)
 		if runtime.ConsoleStdout != nil {
-			fmt.Fprintf(runtime.ConsoleStdout, "[%s] %s○%s Action %s: skipped (%s already up to date)\n",
-				runtime.Host.Name, ctc.ForegroundBlue, ctc.Reset, runtime.ActionDesc, dst)
+			fmt.Fprintf(runtime.ConsoleStdout, "[%s] %s○%s Action %s: skipped (%s, %s already up to date)\n",
+				runtime.Host.Name, ctc.ForegroundBlue, ctc.Reset, runtime.ActionDesc, dst, sizeStr)
 		}
 		return nil
 	}
@@ -127,15 +141,27 @@ func (a *CopyAction) Execute(ctx context.Context, runtime *types.Runtime) error 
 		return fmt.Errorf("failed to copy %s to %s: %w", srcDesc, dst, err)
 	}
 
+	// Log successful copy with size
+	fmt.Fprintf(runtime.Stdout, "Copied %s to %s (%s)\n", srcDesc, dst, sizeStr)
+
 	return nil
 }
 
 func (a *CopyAction) DryRun(ctx context.Context, runtime *types.Runtime) string {
 	dst := ExpandEnvVars(a.Dst, runtime.Env)
-	if a.Artifact != "" {
-		return fmt.Sprintf("copy: artifact=%s to=%s (mode: %o, verify checksum)", a.Artifact, dst, a.Mode)
+
+	// Try to get file size for display
+	var sizeInfo string
+	if a.Src != "" {
+		if stat, err := os.Stat(a.Src); err == nil {
+			sizeInfo = fmt.Sprintf(", %s", formatFileSize(stat.Size()))
+		}
 	}
-	return fmt.Sprintf("copy: %s to %s (mode: %o, verify checksum)", a.Src, dst, a.Mode)
+
+	if a.Artifact != "" {
+		return fmt.Sprintf("copy: artifact=%s to=%s (mode: %o%s, verify checksum)", a.Artifact, dst, a.Mode, sizeInfo)
+	}
+	return fmt.Sprintf("copy: %s to %s (mode: %o%s, verify checksum)", a.Src, dst, a.Mode, sizeInfo)
 }
 
 // calculateChecksum reads content and returns SHA-256 hash
@@ -145,6 +171,24 @@ func calculateChecksum(reader io.Reader) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// formatFileSize formats file size in human-readable format
+// < 1 KB: bytes, < 1 MB: KiB, >= 1 MB: MiB
+func formatFileSize(size int64) string {
+	const (
+		KB = 1024
+		MB = 1024 * 1024
+	)
+
+	switch {
+	case size < KB:
+		return fmt.Sprintf("%d bytes", size)
+	case size < MB:
+		return fmt.Sprintf("%.2f KiB", float64(size)/KB)
+	default:
+		return fmt.Sprintf("%.2f MiB", float64(size)/MB)
+	}
 }
 
 // getRemoteChecksum returns (checksum, exists, error)
