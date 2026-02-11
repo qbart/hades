@@ -37,7 +37,8 @@ func (h *Hades) Run() {
 	}
 
 	runCmd := h.buildRunCommand()
-	rootCmd.AddCommand(runCmd)
+	initCmd := h.buildInitCommand()
+	rootCmd.AddCommand(runCmd, initCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(h.stderr, "%sError:%s %v\n", ctc.ForegroundRed, ctc.Reset, err)
