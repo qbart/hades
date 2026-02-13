@@ -38,7 +38,8 @@ func (h *Hades) Run() {
 
 	runCmd := h.buildRunCommand()
 	initCmd := h.buildInitCommand()
-	rootCmd.AddCommand(runCmd, initCmd)
+	cloudCmd := h.buildCloudCommand()
+	rootCmd.AddCommand(runCmd, initCmd, cloudCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(h.stderr, "%sError:%s %v\n", ctc.ForegroundRed, ctc.Reset, err)
