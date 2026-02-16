@@ -1,0 +1,9 @@
+hcloud_token = "replace-with-your-token"
+
+# Optional overrides
+# name_prefix = "prod"
+# app_count   = 7
+# db_count    = 3
+# server_type = "cx22"
+# image       = "ubuntu-24.04"
+# location    = "fsn1"
